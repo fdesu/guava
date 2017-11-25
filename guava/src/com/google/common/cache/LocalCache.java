@@ -3354,40 +3354,38 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
     }
 
     void clear() {
-      if (count != 0) { // read-volatile
-        lock();
-        try {
-          long now = map.ticker.read();
-          preWriteCleanup(now);
+      lock();
+      try {
+        long now = map.ticker.read();
+        preWriteCleanup(now);
 
-          AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
-          for (int i = 0; i < table.length(); ++i) {
-            for (ReferenceEntry<K, V> e = table.get(i); e != null; e = e.getNext()) {
-              // Loading references aren't actually in the map yet.
-              if (e.getValueReference().isActive()) {
-                K key = e.getKey();
-                V value = e.getValueReference().get();
-                RemovalCause cause =
-                    (key == null || value == null) ? RemovalCause.COLLECTED : RemovalCause.EXPLICIT;
-                enqueueNotification(
-                    key, e.getHash(), value, e.getValueReference().getWeight(), cause);
-              }
+        AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
+        for (int i = 0; i < table.length(); ++i) {
+          for (ReferenceEntry<K, V> e = table.get(i); e != null; e = e.getNext()) {
+            // Loading references aren't actually in the map yet.
+            if (e.getValueReference().isActive()) {
+              K key = e.getKey();
+              V value = e.getValueReference().get();
+              RemovalCause cause =
+                      (key == null || value == null) ? RemovalCause.COLLECTED : RemovalCause.EXPLICIT;
+              enqueueNotification(
+                      key, e.getHash(), value, e.getValueReference().getWeight(), cause);
             }
           }
-          for (int i = 0; i < table.length(); ++i) {
-            table.set(i, null);
-          }
-          clearReferenceQueues();
-          writeQueue.clear();
-          accessQueue.clear();
-          readCount.set(0);
-
-          ++modCount;
-          count = 0; // write-volatile
-        } finally {
-          unlock();
-          postWriteCleanup();
         }
+        for (int i = 0; i < table.length(); ++i) {
+          table.set(i, null);
+        }
+        clearReferenceQueues();
+        writeQueue.clear();
+        accessQueue.clear();
+        readCount.set(0);
+
+        ++modCount;
+        count = 0; // write-volatile
+      } finally {
+        unlock();
+        postWriteCleanup();
       }
     }
 
