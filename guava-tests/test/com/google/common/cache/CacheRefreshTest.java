@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2011 The Guava Authors
+ * Copyright (C) 2017 The Guava Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -14,12 +14,19 @@
 
 package com.google.common.cache;
 
-import static com.google.common.cache.TestingCacheLoaders.incrementingLoader;
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.google.common.cache.TestingCacheLoaders.IncrementingLoader;
 import com.google.common.testing.FakeTicker;
 import junit.framework.TestCase;
+import org.junit.Test;
+
+import static com.google.common.cache.TestingCacheLoaders.incrementingLoader;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 /**
  * Tests relating to automatic cache refreshing.
@@ -96,4 +103,52 @@ public class CacheRefreshTest extends TestCase {
     assertEquals(expectedLoads, loader.getLoadCount());
     assertEquals(expectedReloads, loader.getReloadCount());
   }
+
+  /**
+   * Test simulates a race condition when Thread1 tries to load value (long-running load),
+   * invalidateAll happens and Thread2 also tries to load value
+   *
+   * @throws InterruptedException
+   */
+  @Test
+  public void testCacheContinuesToRefreshValueAfterInvalidateClearsTheCache()
+          throws InterruptedException, ExecutionException {
+    AtomicInteger counter = new AtomicInteger();
+    LoadingCache<String, Integer> cache = CacheBuilder.newBuilder()
+            .refreshAfterWrite(1, TimeUnit.MILLISECONDS)
+            .removalListener(obj -> System.out.println(obj.getCause()))
+            .build(new CacheLoader<String, Integer>() {
+              @Override
+              public Integer load(String s) throws InterruptedException {
+                Thread.sleep(10L);
+                return counter.incrementAndGet();
+              }
+            });
+
+    cache.getUnchecked("");
+
+    Thread thread = new Thread(() -> {
+      try {
+        cache.get("", () -> {
+          Thread.sleep(100L);
+          return counter.incrementAndGet();
+        });
+      } catch (ExecutionException e) {
+        e.printStackTrace();
+      }
+    });
+    thread.start();
+
+    Set<Integer> valuesAfterRefresh = new HashSet<>(20);
+    for (int i = 0; i < 20; i++) {
+      Thread.sleep(50L);
+      cache.invalidateAll();
+      Integer e = cache.get("");
+      System.out.println("Retrived: " + e);
+      valuesAfterRefresh.add(e);
+    }
+    System.out.println(valuesAfterRefresh);
+    assertEquals("Value should be refreshed", 20, valuesAfterRefresh.size());
+  }
+
 }

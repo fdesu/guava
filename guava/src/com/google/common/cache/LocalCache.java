@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009 The Guava Authors
+ * Copyright (C) 2017 The Guava Authors
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
@@ -3273,6 +3273,9 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
             V entryValue = valueReference.get();
             // replace the old LoadingValueReference if it's live, otherwise
             // perform a putIfAbsent
+            System.out.println("old ref: " + oldValueReference + ", new ref: " + valueReference);
+            System.out.println("oldRef: " + oldValueReference.isActive() + " / " + oldValueReference.isLoading());
+            System.out.println("valRef: " + valueReference.isActive() + " / " + valueReference.isLoading());
             if (oldValueReference == valueReference
                 || (entryValue == null && valueReference != UNSET)) {
               ++modCount;
@@ -3286,8 +3289,15 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
               this.count = newCount; // write-volatile
               evictEntries(e);
               return true;
+            } else if (!oldValueReference.isActive() && valueReference.isActive()) {
+              enqueueNotification(key, hash, newValue, oldValueReference.getWeight(), RemovalCause.REPLACED);
+              setValue(e, key, newValue, now);
+              evictEntries(e);
+              System.out.println("count in new path is: " + count);
+              return true;
             }
 
+            System.out.println("!!! WRONG WAY !!!");
             // the loaded value was already clobbered
             enqueueNotification(key, hash, newValue, 0, RemovalCause.REPLACED);
             return false;
@@ -3360,21 +3370,21 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
           long now = map.ticker.read();
           preWriteCleanup(now);
 
+          int loadingCount = 0;
           AtomicReferenceArray<ReferenceEntry<K, V>> table = this.table;
           for (int i = 0; i < table.length(); ++i) {
             for (ReferenceEntry<K, V> e = table.get(i); e != null; e = e.getNext()) {
-              // Loading references aren't actually in the map yet.
-              if (e.getValueReference().isActive()) {
+              ValueReference<K, V> valueReference = e.getValueReference();
+              if (valueReference.isActive()) {
                 K key = e.getKey();
-                V value = e.getValueReference().get();
-                RemovalCause cause =
-                    (key == null || value == null) ? RemovalCause.COLLECTED : RemovalCause.EXPLICIT;
-                enqueueNotification(
-                    key, e.getHash(), value, e.getValueReference().getWeight(), cause);
+                V value = valueReference.get();
+                RemovalCause cause = (key == null || value == null) ? RemovalCause.COLLECTED : RemovalCause.EXPLICIT;
+                enqueueNotification(key, e.getHash(), value, valueReference.getWeight(), cause);
+
+                // Loading references aren't actually in the map yet.
+                if (valueReference.isLoading()) loadingCount++;
               }
             }
-          }
-          for (int i = 0; i < table.length(); ++i) {
             table.set(i, null);
           }
           clearReferenceQueues();
@@ -3383,7 +3393,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
           readCount.set(0);
 
           ++modCount;
-          count = 0; // write-volatile
+          count = loadingCount; // write-volatile
         } finally {
           unlock();
           postWriteCleanup();
@@ -3704,10 +3714,14 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
       try {
         stopwatch.start();
         V previousValue = oldValue.get();
+        System.out.println("Prev value: " + previousValue);
         if (previousValue == null) {
+          System.out.println("Before load");
           V newValue = loader.load(key);
+          System.out.println("After load");
           return set(newValue) ? futureValue : Futures.immediateFuture(newValue);
         }
+        System.out.println("Reload");
         ListenableFuture<V> newValue = loader.reload(key, previousValue);
         if (newValue == null) {
           return Futures.immediateFuture(null);
@@ -3719,6 +3733,7 @@ class LocalCache<K, V> extends AbstractMap<K, V> implements ConcurrentMap<K, V> 
             new com.google.common.base.Function<V, V>() {
               @Override
               public V apply(V newValue) {
+                System.out.println("Set up value into LoadingValueReference.this: " + LoadingValueReference.this);
                 LoadingValueReference.this.set(newValue);
                 return newValue;
               }
